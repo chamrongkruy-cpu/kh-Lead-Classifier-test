@@ -389,6 +389,29 @@ tab1, tab2, tab3, tab4 = st.tabs([
 ])
 
 with tab1:
+    # 📎 Collapsible guide to export required Salesforce reports
+    with st.expander("📎 How to get your files — click to expand", expanded=False):
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Step 1 · Leads file (Salesforce)**")
+            st.link_button(
+                "Open Cambodia Leads Report →",
+                "https://deliveryhero.lightning.force.com/lightning/r/Report/00ObO000008clm5UAA/view?",
+                use_container_width=True
+            )
+        with c2:
+            st.markdown("**Step 2 · CRM Export (Salesforce)**")
+            st.link_button(
+                "Open Cambodia CRM Report →",
+                "https://deliveryhero.lightning.force.com/lightning/r/Report/00ObO000008cmAHUAY/view?queryScope=userFolders",
+                use_container_width=True
+            )
+        st.info(
+            "🔗 **For Apify Results:** Go to the **Generate Apify URLs** tab → "
+            "Step 1 generates your search URLs → paste into Apify Google Maps scraper → "
+            "Step 2 enriches the output with the GRID column automatically."
+        )
+
     st.subheader("1. Upload Input Files")
     st.caption("Upload the Salesforce Leads export, Apify Google Maps scrape results, and Salesforce All Accounts CRM export.")
 
@@ -598,3 +621,4 @@ with tab4:
     - `Sangkat / Khan / Province`
     - `Coordinates (Latitude)` & `Coordinates (Longitude)`
     """)
+
