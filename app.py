@@ -30,7 +30,213 @@ except ImportError:
 try:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-    from openpyxl.utils import get_column_letter
+from openpyxl.utils import get_column_letter
+
+from urllib.parse import unquote, quote
+
+def norm_url(u: Any) -> str:
+    """Normalizes Google Maps search URLs for reliable key matching."""
+    if pd.isna(u) or u is None:
+        return ""
+    s = unquote(str(u).strip())
+    s = s.split("?hl=")[0].split("&hl=")[0].split("&query_place_id=")[0]
+    return s.lower().strip()
+
+def generate_google_urls(leads_df: pd.DataFrame, col_map: Dict[str, str], mode: str = "text") -> Tuple[List[str], int]:
+    """Generates Google Maps search URLs formatted for Cambodian locations."""
+    name_col = col_map.get('name')
+    street_col = col_map.get('street')
+    sangkat_col = col_map.get('sangkat')
+    lat_col = col_map.get('lat')
+    lng_col = col_map.get('lng')
+    url_col = col_map.get('url')
+
+    urls, reused = [], 0
+    for _, row in leads_df.iterrows():
+        existing = str(row.get(url_col, "") or "") if url_col else ""
+        if existing not in ("", "nan", "None") and "google.com/maps" in existing:
+            urls.append(existing.strip())
+            reused += 1
+            continue
+
+        name = str(row.get(name_col, "")).strip() if name_col and pd.notna(row.get(name_col)) else ""
+        street = str(row.get(street_col, "")).strip() if street_col and pd.notna(row.get(street_col)) else ""
+        sangkat = str(row.get(sangkat_col, "")).strip() if sangkat_col and pd.notna(row.get(sangkat_col)) else ""
+
+        lat = row.get(lat_col) if lat_col else None
+        lng = row.get(lng_col) if lng_col else None
+        try:
+            lat = float(lat) if lat is not None and str(lat) not in ("", "nan", "None") else None
+            lng = float(lng) if lng is not None and str(lng) not in ("", "nan", "None") else None
+        except (ValueError, TypeError):
+            lat = lng = None
+
+        url = ""
+        if mode == "text":
+            parts = [p for p in [name, street, sangkat, "Cambodia"] if p and p.lower() != "nan"]
+            if parts:
+                q = " ".join(parts)
+                url = f"https://www.google.com/maps/search/?api=1&query={quote(q)}"
+            elif lat and lng:
+                url = f"https://www.google.com/maps/search/?api=1&query={lat},{lng}"
+        else: # mode == "coords"
+            if lat and lng:
+                if name:
+                    url = f"https://www.google.com/maps/search/?api=1&query={quote(f'{name},{lat},{lng}')}"
+                else:
+                    url = f"https://www.google.com/maps/search/?api=1&query={lat},{lng}"
+            else:
+                parts = [p for p in [name, street, sangkat, "Cambodia"] if p and p.lower() != "nan"]
+                if parts:
+                    q = " ".join(parts)
+                    url = f"https://www.google.com/maps/search/?api=1&query={quote(q)}"
+
+        urls.append(url)
+    return urls, reused
+
+with tab2:
+    st.subheader("Generate Google Maps URLs for Apify")
+
+    # ── Step 1: Generate URLs ─────────────────────────────────
+    st.markdown("#### Step 1 · Generate URLs")
+
+    url_mode = st.radio(
+        "URL format",
+        options=["text", "coords"],
+        format_func=lambda m: (
+            "📝  Company / Account + Street + Sangkat / Khan"
+            if m == "text"
+            else "📍  Company / Account + Coordinates (Latitude, Longitude)"
+        ),
+        horizontal=False,
+        key="url_mode"
+    )
+
+    url_up = st.file_uploader("Upload leads file (.xlsx or .csv)", type=["xlsx", "xls", "csv"], key="url_leads")
+    if url_up:
+        try:
+            url_df = pd.read_excel(url_up) if url_up.name.endswith(('.xlsx', '.xls')) else pd.read_csv(url_up)
+            url_col_map = {
+                'grid': resolve_column(url_df, ['GRID', 'Lead ID', 'Id']),
+                'name': resolve_column(url_df, ['Company / Account', 'Company', 'Lead Name', 'Account Name']),
+                'street': resolve_column(url_df, ['Street / Street No.', 'Street', 'Address']),
+                'sangkat': resolve_column(url_df, ['Sangkat / Khan / Province', 'Sangkat', 'District']),
+                'lat': resolve_column(url_df, ['Coordinates (Latitude)', 'Latitude', 'Lat']),
+                'lng': resolve_column(url_df, ['Coordinates (Longitude)', 'Longitude', 'Lng']),
+                'url': resolve_column(url_df, ['GOOGLE URL', 'Google URL', 'URL', 'Website'])
+            }
+            urls, reused = generate_google_urls(url_df, url_col_map, mode=url_mode)
+            url_df["GOOGLE URL"] = urls
+            valid = [u for u in urls if u]
+
+            # Store GRID -> norm_url in session state
+            grid_col_name = url_col_map.get('grid')
+            if grid_col_name:
+                url_to_grid = {}
+                for i, (_, row) in enumerate(url_df.iterrows()):
+                    if i < len(urls) and urls[i]:
+                        g = str(row.get(grid_col_name, "") or "").strip()
+                        if g and g.lower() != "nan":
+                            url_to_grid[norm_url(urls[i])] = g
+                st.session_state["url_to_grid"] = url_to_grid
+
+            st.info(f"{len(valid):,} URLs generated ({reused:,} reused from existing column).")
+            st.text_area("Generated targets", "\n".join(valid), height=180)
+            buf = io.StringIO()
+            url_df.to_csv(buf, index=False)
+            st.download_button(
+                "⬇ Download leads with URLs (.csv)",
+                buf.getvalue(),
+                "leads_with_urls_KH.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        except Exception as e:
+            st.error(f"Error generating URLs: {e}")
+
+    st.divider()
+
+    # ── Step 2: Append GRID to Apify export ──────────────────
+    st.markdown("#### Step 2 · Add GRID to your Apify Export")
+    st.caption("After running Apify, upload your export here. The tool matches each row via `inputStartUrl` and adds a **GRID** column.")
+
+    lookup: dict = dict(st.session_state.get("url_to_grid", {}))
+
+    if lookup:
+        st.success(f"✅ {len(lookup):,} GRIDs ready from Step 1 above.")
+    else:
+        st.info("No URLs generated this session yet. Upload your URL CSV below.")
+
+    with st.expander("📂 Upload URL CSV (if you generated URLs in a previous session)"):
+        st.caption("Upload the CSV downloaded from Step 1. The tool auto-detects the GRID and URL columns.")
+        url_csv_up = st.file_uploader("Upload leads+URL CSV (.csv or .xlsx)", type=["csv", "xlsx", "xls"], key="url_csv_fallback")
+        if url_csv_up:
+            try:
+                fb_df = pd.read_excel(url_csv_up) if url_csv_up.name.endswith(('.xlsx', '.xls')) else pd.read_csv(url_csv_up)
+                grid_c = resolve_column(fb_df, ['GRID', 'grid', 'Lead ID'])
+                gurl_c = resolve_column(fb_df, ['GOOGLE URL', 'Google URL', 'URL', 'url'])
+                if grid_c and gurl_c:
+                    for _, row in fb_df.iterrows():
+                        g = str(row.get(grid_c, "") or "").strip()
+                        u = str(row.get(gurl_c, "") or "").strip()
+                        if g and u and u.lower() not in ("nan", ""):
+                            lookup[norm_url(u)] = g
+                    st.success(f"Loaded {len(lookup):,} GRIDs from uploaded file.")
+                else:
+                    st.error("Could not locate GRID or URL column in uploaded file.")
+            except Exception as e:
+                st.error(f"Error reading file: {e}")
+
+    apify_merge_up = st.file_uploader("Upload Apify export (.csv or .xlsx)", type=["csv", "xlsx", "xls"], key="apify_merge")
+
+    if apify_merge_up and lookup:
+        try:
+            apy_df = pd.read_excel(apify_merge_up) if apify_merge_up.name.endswith(('.xlsx', '.xls')) else pd.read_csv(apify_merge_up)
+            input_url_col = resolve_column(apy_df, [
+                "inputStartUrl", "input_start_url",
+                "searchPageUrl", "search_page_url",
+                "searchUrl", "url"
+            ])
+
+            if input_url_col is None:
+                st.error("Could not find `inputStartUrl` or `searchPageUrl` column in the Apify export.")
+            else:
+                grids = []
+                matched = 0
+                for _, row in apy_df.iterrows():
+                    raw = str(row.get(input_url_col, "") or "")
+                    key = norm_url(raw)
+                    grid = lookup.get(key, "")
+                    if grid:
+                        matched += 1
+                    grids.append(grid)
+
+                result_df = apy_df.copy()
+                if "GRID" in result_df.columns:
+                    result_df["GRID"] = grids
+                else:
+                    result_df.insert(0, "GRID", grids)
+
+                unmatched = len(result_df) - matched
+                if unmatched > 0:
+                    st.warning(f"⚠️ {matched} of {len(result_df)} rows matched. {unmatched} rows have no GRID.")
+                else:
+                    st.success(f"✅ All {len(result_df)} rows matched successfully.")
+
+                buf2 = io.StringIO()
+                result_df.to_csv(buf2, index=False)
+                st.download_button(
+                    "⬇ Download Apify export with GRID",
+                    buf2.getvalue(),
+                    "apify_with_grid.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+        except Exception as e:
+            st.error(f"Error processing Apify export: {e}")
+    elif apify_merge_up and not lookup:
+        st.warning("No GRID lookup available. Generate URLs in Step 1 first.")
+
     HAS_OPENPYXL = True
 except ImportError:
     HAS_OPENPYXL = False
@@ -114,6 +320,21 @@ def normalize_cambodian_text(text: Any) -> str:
     # Standardize consecutive whitespace
     s = re.sub(r'\s+', ' ', s).strip()
     return s
+
+def normalize_cambodian_phone(phone: Any) -> str:
+    """Normalizes Cambodian phone numbers to standard +855 E.164 format."""
+    if pd.isna(phone) or phone is None:
+        return ""
+    s = re.sub(r'\D', '', str(phone).strip().replace(".0", ""))
+    if not s:
+        return ""
+    if s.startswith("855"):
+        return "+" + s
+    if s.startswith("0"):
+        s = s[1:]
+    if len(s) in (8, 9):
+        return "+855" + s
+    return str(phone).strip()
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """
@@ -403,7 +624,7 @@ with tab1:
             st.markdown("**Step 2 · CRM Export (Salesforce)**")
             st.link_button(
                 "Open Cambodia CRM Report →",
-                "https://deliveryhero.lightning.force.com/lightning/r/Report/00ObO000008cmAHUAY/view?queryScope=userFolders",
+                "https://deliveryhero.lightning.force.com/lightning/r/Report/00ObO000005IE85UAG/view?queryScope=userFolders",
                 use_container_width=True
             )
         st.info(
@@ -450,6 +671,7 @@ with tab1:
                     lead_cols = {
                         'grid': resolve_column(df_leads, ['GRID', 'Lead ID', 'Id', 'Lead_GRID']),
                         'name': resolve_column(df_leads, ['Company / Account', 'Company', 'Lead Name', 'Account Name', 'Name']),
+                        'phone': resolve_column(df_leads, ['Phone', 'Mobile', 'Phone Number', 'Telephone', 'Contact Phone', 'Phone_Number']),
                         'street': resolve_column(df_leads, ['Street / Street No.', 'Street', 'Address', 'Street Address']),
                         'sangkat': resolve_column(df_leads, ['Sangkat / Khan / Province', 'Sangkat', 'District', 'City', 'State']),
                         'lat': resolve_column(df_leads, ['Coordinates (Latitude)', 'Latitude', 'Lat', 'location/lat']),
@@ -459,6 +681,7 @@ with tab1:
                     crm_cols = {
                         'grid': resolve_column(df_crm, ['GRID', 'Account ID', 'Id']),
                         'name': resolve_column(df_crm, ['Account Name', 'Company Name', 'Name']),
+                        'phone': resolve_column(df_crm, ['Phone', 'Mobile', 'Phone Number', 'Telephone', 'Account Phone', 'Contact Phone']),
                         'sangkat': resolve_column(df_crm, ['Sangkat / Khan', 'Sangkat', 'District', 'BillingCity']),
                         'lat': resolve_column(df_crm, ['Latitude', 'Lat', 'BillingLatitude']),
                         'lng': resolve_column(df_crm, ['Longitude', 'Lng', 'BillingLongitude']),
@@ -471,6 +694,7 @@ with tab1:
                             'grid': resolve_column(df_apify, ['GRID', 'lead_grid', 'Input_GRID']),
                             'title': resolve_column(df_apify, ['title', 'name', 'placeName']),
                             'category': resolve_column(df_apify, ['categoryName', 'category', 'primaryCategory']),
+                            'phone': resolve_column(df_apify, ['phone', 'phoneNumber', 'phone_number', 'contactPhone']),
                             'perm_closed': resolve_column(df_apify, ['permanentlyClosed', 'permanently_closed']),
                             'temp_closed': resolve_column(df_apify, ['temporarilyClosed', 'temporarily_closed'])
                         }
@@ -492,14 +716,17 @@ with tab1:
                         reason = match_reason
                         matched_crm_name = match_acc.get(crm_cols.get('name', ''), '') if match_acc is not None else ""
                         matched_crm_grid = match_acc.get(crm_cols.get('grid', ''), '') if match_acc is not None else ""
+                        matched_crm_phone = normalize_cambodian_phone(match_acc.get(crm_cols.get('phone', ''), '')) if match_acc is not None else ""
 
                         # 2. Apify Validation if no CRM match
+                        apify_phone = ""
                         if crm_label == "No CRM Match":
                             apify_match_row = None
                             if df_apify is not None and apify_cols.get('grid'):
                                 matched_rows = df_apify[df_apify[apify_cols['grid']].astype(str) == str(grid_val)]
                                 if not matched_rows.empty:
                                     apify_match_row = matched_rows.iloc[0]
+                                    apify_phone = normalize_cambodian_phone(apify_match_row.get(apify_cols.get('phone', ''), ''))
 
                             apify_label, apify_reason = validate_apify_status(
                                 apify_match_row, apify_cols, valid_categories_list
@@ -508,11 +735,14 @@ with tab1:
                             reason = apify_reason
 
                         res_row = lead_row.to_dict()
+                        res_row['Phone'] = normalize_cambodian_phone(lead_row.get(lead_cols.get('phone', ''), ''))
+                        res_row['GM Phone'] = apify_phone
                         res_row['Final Classification'] = final_label
                         res_row['Classification Reason'] = reason
                         res_row['Match Score (%)'] = round(score, 1)
                         res_row['Matched CRM Account Name'] = matched_crm_name
                         res_row['Matched CRM GRID'] = matched_crm_grid
+                        res_row['Matched CRM Phone'] = matched_crm_phone
                         
                         results.append(res_row)
 
@@ -621,4 +851,3 @@ with tab4:
     - `Sangkat / Khan / Province`
     - `Coordinates (Latitude)` & `Coordinates (Longitude)`
     """)
-
