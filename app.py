@@ -116,9 +116,7 @@ def normalize_cambodian_text(text: Any) -> str:
     return s
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """
-    Calculates geodesic distance in meters using Haversine formula (fallback if geopy unavailable).
-    """
+    """Calculates geodesic distance in meters using Haversine formula (fallback)."""
     R = 6371000.0  # Earth radius in meters
     phi1 = math.radians(lat1)
     phi2 = math.radians(lat2)
@@ -138,6 +136,23 @@ def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
         return haversine_distance(lat1, lon1, lat2, lon2)
     except Exception:
         return float('inf')
+
+def check_delivery_zone(lat: float, lng: float, zones_list: List[Dict]) -> Tuple[bool, str]:
+    """Checks if a Lat/Lng pair falls inside any polygon in zones_list."""
+    if not HAS_SHAPELY or not zones_list or pd.isna(lat) or pd.isna(lng):
+        return False, "Unchecked / Missing Coordinates"
+    
+    try:
+        point = Point(float(lng), float(lat))
+        for z in zones_list:
+            wkt_str = z.get('wkt', '')
+            if wkt_str:
+                poly = load_wkt(wkt_str)
+                if poly.contains(point):
+                    return True, z.get('zone_name', 'Covered Zone')
+        return False, "Out of Delivery Zone"
+    except Exception:
+        return False, "Zone Check Error"
 
 def resolve_column(df: pd.DataFrame, possible_names: List[str]) -> Optional[str]:
     """Finds the first matching column name in df (case-insensitive)."""
@@ -371,7 +386,7 @@ fnb_categories_input = st.sidebar.text_area(
 
 valid_categories_list = [c.strip().lower() for c in fnb_categories_input.split(",") if c.strip()]
 
-st.markdown('<p class="main-title">🎯 Sales Ops · Cambodia Lead Classifier</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">🎯 Sales Ops · Lead Classifier</p>', unsafe_allow_html=True)
 st.markdown('<p class="sub-title"><b>Delivery Hero / foodpanda Cambodia</b> · Digital Sales APAC — Phnom Penh & Provinces</p>', unsafe_allow_html=True)
 
 # Password Gate Check
@@ -389,7 +404,6 @@ tab1, tab2, tab3, tab4 = st.tabs([
 ])
 
 with tab1:
-    # 📎 Collapsible guide to export required Salesforce reports
     with st.expander("📎 How to get your files — click to expand", expanded=False):
         c1, c2 = st.columns(2)
         with c1:
@@ -465,10 +479,12 @@ with tab1:
                         'address': resolve_column(df_crm, ['Formatted Restaurant Address', 'BillingStreet', 'Address'])
                     }
 
+                    # Expanded Apify column mapping (GRID + inputUrl)
                     apify_cols = {}
                     if df_apify is not None:
                         apify_cols = {
                             'grid': resolve_column(df_apify, ['GRID', 'lead_grid', 'Input_GRID']),
+                            'input_url': resolve_column(df_apify, ['inputUrl', 'searchUrl', 'url', 'input_url']),
                             'title': resolve_column(df_apify, ['title', 'name', 'placeName']),
                             'category': resolve_column(df_apify, ['categoryName', 'category', 'primaryCategory']),
                             'perm_closed': resolve_column(df_apify, ['permanentlyClosed', 'permanently_closed']),
@@ -496,8 +512,19 @@ with tab1:
                         # 2. Apify Validation if no CRM match
                         if crm_label == "No CRM Match":
                             apify_match_row = None
-                            if df_apify is not None and apify_cols.get('grid'):
-                                matched_rows = df_apify[df_apify[apify_cols['grid']].astype(str) == str(grid_val)]
+                            if df_apify is not None:
+                                matched_rows = pd.DataFrame()
+                                
+                                # Match via GRID column
+                                if apify_cols.get('grid'):
+                                    matched_rows = df_apify[df_apify[apify_cols['grid']].astype(str) == str(grid_val)]
+                                
+                                # Fallback match via inputUrl string
+                                if matched_rows.empty and apify_cols.get('input_url'):
+                                    lead_name_str = str(lead_row.get(lead_cols.get('name', ''), '')).lower()
+                                    if lead_name_str:
+                                        matched_rows = df_apify[df_apify[apify_cols['input_url']].astype(str).str.lower().str.contains(re.escape(lead_name_str), na=False)]
+
                                 if not matched_rows.empty:
                                     apify_match_row = matched_rows.iloc[0]
 
@@ -507,12 +534,21 @@ with tab1:
                             final_label = apify_label
                             reason = apify_reason
 
+                        # 3. Delivery zone check
+                        in_zone = True
+                        zone_name = "N/A"
+                        if loaded_zones and lead_cols.get('lat') and lead_cols.get('lng'):
+                            lat_v = lead_row.get(lead_cols['lat'])
+                            lng_v = lead_row.get(lead_cols['lng'])
+                            in_zone, zone_name = check_delivery_zone(lat_v, lng_v, loaded_zones)
+
                         res_row = lead_row.to_dict()
                         res_row['Final Classification'] = final_label
                         res_row['Classification Reason'] = reason
                         res_row['Match Score (%)'] = round(score, 1)
                         res_row['Matched CRM Account Name'] = matched_crm_name
                         res_row['Matched CRM GRID'] = matched_crm_grid
+                        res_row['Delivery Zone Coverage'] = zone_name if loaded_zones else "Not Checked"
                         
                         results.append(res_row)
 
@@ -544,26 +580,50 @@ with tab1:
                     st.exception(e)
 
 with tab2:
-    st.subheader("🔗 Generate Apify Google Maps Search URLs")
-    st.caption("Generate targeted Google Maps search URLs for Cambodian cities and provinces to feed into the Apify scraper.")
+    st.subheader("🔗 Step 1: Generate Apify Google Maps Search URLs")
+    st.caption("Upload your leads file to generate search URLs containing GRID identifiers.")
 
-    raw_leads_text = st.text_area(
-        "Paste Restaurant Names & Sangkats (one per line)",
-        value="Bay Cha BKK1, Phnom Penh\nNum Banh Chok Toul Kork, Phnom Penh\nPub Street Cafe, Siem Reap",
-        height=150
-    )
+    leads_file_tab2 = st.file_uploader("Upload Leads File (.xlsx / .csv)", type=["xlsx", "csv"], key="leads_tab2")
 
-    if st.button("Generate Search URLs"):
-        lines = [line.strip() for line in raw_leads_text.split('\n') if line.strip()]
-        url_data = []
-        for line in lines:
-            query = f"{line}, Cambodia"
-            encoded_q = re.sub(r'\s+', '+', query)
-            url = f"https://www.google.com/maps/search/{encoded_q}"
-            url_data.append({"Search Query": line, "Google Maps Search URL": url})
+    if leads_file_tab2:
+        df_urls_input = pd.read_excel(leads_file_tab2) if leads_file_tab2.name.endswith('.xlsx') else pd.read_csv(leads_file_tab2)
         
-        url_df = pd.DataFrame(url_data)
-        st.dataframe(url_df, use_container_width=True)
+        grid_col = resolve_column(df_urls_input, ['GRID', 'Lead ID', 'Id', 'Lead_GRID'])
+        name_col = resolve_column(df_urls_input, ['Company / Account', 'Company', 'Lead Name', 'Account Name', 'Name'])
+        sangkat_col = resolve_column(df_urls_input, ['Sangkat / Khan / Province', 'Sangkat', 'District', 'City', 'Street / Street No.', 'Street'])
+
+        if not name_col:
+            st.error("Could not find a Company/Name column in the uploaded file.")
+        else:
+            url_records = []
+            for idx, row in df_urls_input.iterrows():
+                grid_val = row.get(grid_col, f"GRID_{idx}") if grid_col else f"GRID_{idx}"
+                name_val = str(row.get(name_col, '')).strip()
+                sangkat_val = str(row.get(sangkat_col, '')).strip() if sangkat_col else ""
+                
+                search_term = f"{name_val} {sangkat_val} Cambodia".strip()
+                encoded_q = re.sub(r'\s+', '+', search_term)
+                google_url = f"https://www.google.com/maps/search/{encoded_q}"
+                
+                url_records.append({
+                    "GRID": grid_val,
+                    "Company Name": name_val,
+                    "Search Query": search_term,
+                    "Google Maps Search URL": google_url
+                })
+            
+            df_generated_urls = pd.DataFrame(url_records)
+            st.success(f"Successfully generated {len(df_generated_urls)} URLs!")
+            st.dataframe(df_generated_urls, use_container_width=True)
+            
+            csv_urls = df_generated_urls.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download Generated URLs CSV (Upload to Apify)",
+                data=csv_urls,
+                file_name="Apify_Input_URLs_Cambodia.csv",
+                mime="text/csv",
+                type="primary"
+            )
 
 with tab3:
     st.subheader("🏢 Salesforce CRM Internal Duplicate Audit")
@@ -616,9 +676,9 @@ with tab4:
     3. **Apify Google Maps Validation:** Verifies if non-CRM matched leads are active open food venues.
 
     #### Required Salesforce Export Fields
+    - `GRID`
     - `Company / Account`
     - `Street / Street No.`
     - `Sangkat / Khan / Province`
     - `Coordinates (Latitude)` & `Coordinates (Longitude)`
     """)
-
