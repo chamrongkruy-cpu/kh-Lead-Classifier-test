@@ -411,11 +411,12 @@ with tab1:
                         'address': resolve_column(df_crm, ['Formatted Restaurant Address', 'BillingStreet', 'Address'])
                     }
 
-                    # Resolve Columns for Apify
+                    # Resolve Columns for Apify (Supports GRID and inputUrl matching)
                     apify_cols = {}
                     if df_apify is not None:
                         apify_cols = {
                             'grid': resolve_column(df_apify, ['GRID', 'lead_grid', 'Input_GRID']),
+                            'input_url': resolve_column(df_apify, ['inputUrl', 'searchUrl', 'url', 'input_url']),
                             'title': resolve_column(df_apify, ['title', 'name', 'placeName']),
                             'category': resolve_column(df_apify, ['categoryName', 'category', 'primaryCategory']),
                             'perm_closed': resolve_column(df_apify, ['permanentlyClosed', 'permanently_closed']),
@@ -444,8 +445,19 @@ with tab1:
                         # 2. Apify Google Maps validation if no CRM match
                         if crm_label == "No CRM Match":
                             apify_match_row = None
-                            if df_apify is not None and apify_cols.get('grid'):
-                                matched_rows = df_apify[df_apify[apify_cols['grid']].astype(str) == str(grid_val)]
+                            if df_apify is not None:
+                                matched_rows = pd.DataFrame()
+                                
+                                # Match via GRID column if available
+                                if apify_cols.get('grid'):
+                                    matched_rows = df_apify[df_apify[apify_cols['grid']].astype(str) == str(grid_val)]
+                                
+                                # Fallback: Match via inputUrl string containing company name
+                                if matched_rows.empty and apify_cols.get('input_url'):
+                                    lead_name_str = str(lead_row.get(lead_cols.get('name', ''), '')).lower()
+                                    if lead_name_str:
+                                        matched_rows = df_apify[df_apify[apify_cols['input_url']].astype(str).str.lower().str.contains(re.escape(lead_name_str), na=False)]
+
                                 if not matched_rows.empty:
                                     apify_match_row = matched_rows.iloc[0]
 
@@ -505,26 +517,52 @@ with tab1:
 
 
 with tab2:
-    st.subheader("🔗 Generate Apify Google Maps Search URLs")
-    st.caption("Generate targeted Google Maps search URLs for Cambodian cities and provinces to feed into the Apify scraper.")
+    st.subheader("🔗 Step 1: Generate Apify Google Maps Search URLs")
+    st.caption("Upload your leads file to generate search URLs containing GRID identifiers.")
 
-    raw_leads_text = st.text_area(
-        "Paste Restaurant Names & Sangkats (one per line)",
-        value="Bay Cha BKK1, Phnom Penh\nNum Banh Chok Toul Kork, Phnom Penh\nPub Street Cafe, Siem Reap",
-        height=150
-    )
+    leads_file_tab2 = st.file_uploader("Upload Leads File (.xlsx / .csv)", type=["xlsx", "csv"], key="leads_tab2")
 
-    if st.button("Generate Search URLs"):
-        lines = [line.strip() for line in raw_leads_text.split('\n') if line.strip()]
-        url_data = []
-        for line in lines:
-            query = f"{line}, Cambodia"
-            encoded_q = re.sub(r'\s+', '+', query)
-            url = f"https://www.google.com/maps/search/{encoded_q}"
-            url_data.append({"Search Query": line, "Google Maps Search URL": url})
+    if leads_file_tab2:
+        df_urls_input = pd.read_excel(leads_file_tab2) if leads_file_tab2.name.endswith('.xlsx') else pd.read_csv(leads_file_tab2)
         
-        url_df = pd.DataFrame(url_data)
-        st.dataframe(url_df, use_container_width=True)
+        grid_col = resolve_column(df_urls_input, ['GRID', 'Lead ID', 'Id', 'Lead_GRID'])
+        name_col = resolve_column(df_urls_input, ['Company / Account', 'Company', 'Lead Name', 'Account Name', 'Name'])
+        sangkat_col = resolve_column(df_urls_input, ['Sangkat / Khan / Province', 'Sangkat', 'District', 'City', 'Street / Street No.', 'Street'])
+
+        if not name_col:
+            st.error("Could not find a Company/Name column in the uploaded file.")
+        else:
+            url_records = []
+            for idx, row in df_urls_input.iterrows():
+                grid_val = row.get(grid_col, f"GRID_{idx}") if grid_col else f"GRID_{idx}"
+                name_val = str(row.get(name_col, '')).strip()
+                sangkat_val = str(row.get(sangkat_col, '')).strip() if sangkat_col else ""
+                
+                # Build search query term
+                search_term = f"{name_val} {sangkat_val} Cambodia".strip()
+                encoded_q = re.sub(r'\s+', '+', search_term)
+                google_url = f"https://www.google.com/maps/search/{encoded_q}"
+                
+                url_records.append({
+                    "GRID": grid_val,
+                    "Company Name": name_val,
+                    "Search Query": search_term,
+                    "Google Maps Search URL": google_url
+                })
+            
+            df_generated_urls = pd.DataFrame(url_records)
+            st.success(f"Successfully generated {len(df_generated_urls)} URLs!")
+            st.dataframe(df_generated_urls, use_container_width=True)
+            
+            # Export generated URLs as CSV for Apify input
+            csv_urls = df_generated_urls.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download Generated URLs CSV (Upload to Apify)",
+                data=csv_urls,
+                file_name="Apify_Input_URLs_Cambodia.csv",
+                mime="text/csv",
+                type="primary"
+            )
 
 
 with tab3:
