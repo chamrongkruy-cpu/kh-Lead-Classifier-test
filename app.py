@@ -347,7 +347,7 @@ with tab1:
                     if df_apify is not None:
                         apify_cols = {
                             'grid': resolve_column(df_apify, ['GRID', 'lead_grid', 'Input_GRID']),
-                            'input_url': resolve_column(df_apify, ['inputUrl', 'searchUrl', 'url']),
+                            'input_url': resolve_column(df_apify, ['inputUrl', 'searchUrl', 'url', 'input_url', 'startUrl', 'query', 'url/url', 'input/url', 'Search Query']),
                             'category': resolve_column(df_apify, ['categoryName', 'category']),
                             'perm_closed': resolve_column(df_apify, ['permanentlyClosed', 'permanently_closed']),
                             'temp_closed': resolve_column(df_apify, ['temporarilyClosed', 'temporarily_closed'])
@@ -481,14 +481,15 @@ with tab2:
             df_gen_urls = st.session_state['generated_urls_df']
             df_apify_raw = pd.read_excel(apify_export_file) if apify_export_file.name.endswith('.xlsx') else pd.read_csv(apify_export_file)
 
-            input_url_col = resolve_column(df_apify_raw, ['inputUrl', 'searchUrl', 'url'])
+            # Extended column lookup to handle various Apify export formats
+            input_url_col = resolve_column(df_apify_raw, ['inputUrl', 'searchUrl', 'url', 'input_url', 'startUrl', 'query', 'url/url', 'input/url', 'Search Query'])
             
             if input_url_col:
-                # Merge Apify export with generated URLs matching on URL
-                gen_url_col = resolve_column(df_gen_urls, ['url', 'Google Maps Search URL'])
+                gen_url_col = resolve_column(df_gen_urls, ['url', 'Google Maps Search URL', 'Search Query'])
                 gen_grid_col = resolve_column(df_gen_urls, ['GRID'])
 
                 if gen_url_col and gen_grid_col:
+                    # Merge Apify export with generated URLs matching on URL or Query
                     merged_df = pd.merge(
                         df_apify_raw,
                         df_gen_urls[[gen_url_col, gen_grid_col]],
@@ -510,7 +511,7 @@ with tab2:
                 else:
                     st.error("The reference URLs dataframe is missing the 'url' or 'GRID' column.")
             else:
-                st.error("Could not find `inputUrl` in the uploaded Apify export file.")
+                st.error("Could not find `inputUrl` in the uploaded Apify export file. Available columns in your uploaded file are: " + ", ".join(list(df_apify_raw.columns[:10])))
         else:
             st.warning("Please upload or generate URLs first before attaching GRID to Apify export.")
 
