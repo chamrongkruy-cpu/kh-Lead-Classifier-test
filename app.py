@@ -29,13 +29,11 @@ except ImportError:
 
 try:
     from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-    from openpyxl.utils import get_column_letter
+    from openpyxl.styles import Font, PatternFill
     HAS_OPENPYXL = True
 except ImportError:
     HAS_OPENPYXL = False
 
-# Safe secret retrieval to prevent KeyError on Streamlit Cloud deployment
 APP_PASSWORD = st.secrets.get("APP_PASSWORD", None) if "APP_PASSWORD" in st.secrets else None
 
 st.set_page_config(
@@ -51,7 +49,7 @@ st.markdown("""
     .main-title {
         font-size: 2.2rem;
         font-weight: 800;
-        color: #D70F64; /* foodpanda Pink */
+        color: #D70F64;
         margin-bottom: 0.1rem;
     }
     .sub-title {
@@ -79,57 +77,34 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def normalize_cambodian_text(text: Any) -> str:
-    """
-    Normalizes Khmer script, Romanized Khmer transliterations, and English text.
-    Strips noise words, legal entities, special symbols, and excess spaces.
-    """
     if pd.isna(text) or text is None:
         return ""
-    
-    s = str(text).strip()
+    s = str(text).strip().lower()
     if not s:
         return ""
 
-    # Convert to lowercase
-    s = s.lower()
-
-    # Remove common business entity suffixes in Cambodia
     noise_patterns = [
-        r'\bco\.?,?\s*ltd\.?\b',
-        r'\bco\.?,?\s*ltd\b',
-        r'\binc\.?\b',
-        r'\bexpress\b',
-        r'\bcambodia\b',
-        r'\bphnom\s*penh\b',
-        r'\bkhmer\b',
-        r'\benterprise\b',
-        r'\bgroup\b'
+        r'\bco\.?,?\s*ltd\.?\b', r'\bco\.?,?\s*ltd\b', r'\binc\.?\b',
+        r'\bexpress\b', r'\bcambodia\b', r'\bphnom\s*penh\b',
+        r'\bkhmer\b', r'\benterprise\b', r'\bgroup\b'
     ]
     for pattern in noise_patterns:
         s = re.sub(pattern, '', s, flags=re.IGNORECASE)
 
-    # Clean punctuation except Khmer unicode characters (\u1780-\u17ff)
     s = re.sub(r'[^\w\s\u1780-\u17ff]', ' ', s)
-    
-    # Standardize consecutive whitespace
-    s = re.sub(r'\s+', ' ', s).strip()
-    return s
+    return re.sub(r'\s+', ' ', s).strip()
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Calculates geodesic distance in meters using Haversine formula (fallback)."""
-    R = 6371000.0  # Earth radius in meters
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
+    R = 6371000.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
     delta_phi = math.radians(lat2 - lat1)
     delta_lambda = math.radians(lon2 - lon1)
 
     a = (math.sin(delta_phi / 2.0) ** 2 +
          math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2.0) ** 2)
-    c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
-    return R * c
+    return R * (2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a)))
 
 def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Calculates distance between coordinates in meters using Geopy or Haversine."""
     try:
         if HAS_GEOPY:
             return geodesic((lat1, lon1), (lat2, lon2)).meters
@@ -137,28 +112,10 @@ def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
     except Exception:
         return float('inf')
 
-def check_delivery_zone(lat: float, lng: float, zones_list: List[Dict]) -> Tuple[bool, str]:
-    """Checks if a Lat/Lng pair falls inside any polygon in zones_list."""
-    if not HAS_SHAPELY or not zones_list or pd.isna(lat) or pd.isna(lng):
-        return False, "Unchecked / Missing Coordinates"
-    
-    try:
-        point = Point(float(lng), float(lat))
-        for z in zones_list:
-            wkt_str = z.get('wkt', '')
-            if wkt_str:
-                poly = load_wkt(wkt_str)
-                if poly.contains(point):
-                    return True, z.get('zone_name', 'Covered Zone')
-        return False, "Out of Delivery Zone"
-    except Exception:
-        return False, "Zone Check Error"
-
 def resolve_column(df: pd.DataFrame, possible_names: List[str]) -> Optional[str]:
-    """Finds the first matching column name in df (case-insensitive)."""
     if df is None or df.empty:
         return None
-    cols_lower = {c.lower().strip(): c for c in df.columns}
+    cols_lower = {str(c).lower().strip(): str(c) for c in df.columns}
     for name in possible_names:
         nl = name.lower().strip()
         if nl in cols_lower:
@@ -174,11 +131,6 @@ def find_crm_matches(
     p4_threshold: float = 0.75,
     p3_threshold: float = 0.50
 ) -> Tuple[str, float, Optional[pd.Series], str]:
-    """
-    Executes Cambodian geographic and linguistic matching cascade:
-    1. Lat/Lng GPS Proximity within radius_meters OR exact Sangkat/Khan match.
-    2. Fuzzy Multilingual Name matching via RapidFuzz.
-    """
     lead_name = normalize_cambodian_text(lead_row.get(lead_cols.get('name', '')))
     if not lead_name:
         return "P2 — Please Check", 0.0, None, "Blank Lead Name"
@@ -207,7 +159,6 @@ def find_crm_matches(
         in_proximity = False
         dist_m = float('inf')
 
-        # Proximity Check 1: GPS Radius
         if has_coords and pd.notnull(crm_lat) and pd.notnull(crm_lng):
             try:
                 dist_m = calculate_distance(lead_lat, lead_lng, float(crm_lat), float(crm_lng))
@@ -216,7 +167,6 @@ def find_crm_matches(
             except Exception:
                 pass
 
-        # Proximity Check 2: Sangkat / Khan Boundary Match
         if not in_proximity and lead_sangkat and crm_sangkat:
             if lead_sangkat in crm_sangkat or crm_sangkat in lead_sangkat:
                 in_proximity = True
@@ -237,10 +187,7 @@ def find_crm_matches(
             if score > best_score:
                 best_score = score
                 best_match_row = crm_row
-                if dist_m < float('inf'):
-                    match_reason = f"Proximity Match ({int(dist_m)}m)"
-                else:
-                    match_reason = f"Commune/Sangkat Match ({crm_sangkat})"
+                match_reason = f"Proximity ({int(dist_m)}m)" if dist_m < float('inf') else f"Sangkat Match ({crm_sangkat})"
 
     if best_score >= p4_threshold:
         return "P4 — Duplicate", best_score * 100.0, best_match_row, match_reason
@@ -254,7 +201,6 @@ def validate_apify_status(
     apify_cols: Dict[str, str],
     valid_categories: List[str]
 ) -> Tuple[str, str]:
-    """Validates lead against Google Maps scrape output from Apify."""
     if apify_row is None:
         return "P2 — Please Check", "No Apify result found on Google Maps"
 
@@ -263,39 +209,36 @@ def validate_apify_status(
     temp_closed = str(apify_row.get(apify_cols.get('temp_closed', ''), '')).lower() in ['true', '1', 'yes']
 
     if perm_closed or temp_closed:
-        return "Business Closed", "Permanently or temporarily closed on Google Maps"
+        return "Business Closed", "Closed on Google Maps"
 
     if not cat_val:
         return "P2 — Please Check", "Category unmapped in Google Maps"
 
     is_eligible = any(cat in cat_val or cat_val in cat for cat in valid_categories)
     if is_eligible:
-        return "P1 — New", f"Confirmed Open F&B venue ({cat_val})"
+        return "P1 — New", f"Open F&B venue ({cat_val})"
     else:
         return "Wrong Target Group", f"Non-F&B category ({cat_val})"
 
 def export_to_excel(df_results: pd.DataFrame) -> bytes:
-    """Generates a color-coded Excel workbook with 6 sheets for sales operations."""
     output = io.BytesIO()
-    
     if not HAS_OPENPYXL:
         df_results.to_csv(output, index=False)
         return output.getvalue()
 
     wb = Workbook()
-    
-    fill_p1 = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")  # Green
-    fill_p4 = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")  # Red
-    fill_p3 = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")  # Yellow
-    fill_p2 = PatternFill(start_color="E0E0E0", end_color="E0E0E0", fill_type="solid")  # Grey
-    header_fill = PatternFill(start_color="D70F64", end_color="D70F64", fill_type="solid") # DH Pink
+    fill_p1 = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+    fill_p4 = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+    fill_p3 = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+    fill_p2 = PatternFill(start_color="E0E0E0", end_color="E0E0E0", fill_type="solid")
+    header_fill = PatternFill(start_color="D70F64", end_color="D70F64", fill_type="solid")
     header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
 
     ws_all = wb.active
     ws_all.title = "Classified Leads"
-
     headers = list(df_results.columns)
     ws_all.append(headers)
+    
     for col_num in range(1, len(headers) + 1):
         cell = ws_all.cell(row=1, column=col_num)
         cell.fill = header_fill
@@ -305,7 +248,6 @@ def export_to_excel(df_results: pd.DataFrame) -> bytes:
         ws_all.append(list(row))
         curr_row = ws_all.max_row
         lbl = str(row.get('Final Classification', ''))
-        
         target_cell = ws_all.cell(row=curr_row, column=headers.index('Final Classification') + 1)
         if "P1" in lbl:
             target_cell.fill = fill_p1
@@ -337,59 +279,19 @@ def export_to_excel(df_results: pd.DataFrame) -> bytes:
     wb.save(output)
     return output.getvalue()
 
+# Sidebar Configuration
 st.sidebar.title("⚙️ Settings")
+p3_threshold = st.sidebar.slider("P3 Potential Match starts at (%)", 40, 80, 50, 5) / 100.0
+p4_threshold = st.sidebar.slider("P4 Duplicate starts at (%)", 60, 95, 75, 5) / 100.0
+proximity_radius = st.sidebar.slider("GPS Proximity Radius (Meters)", 50, 1000, 200, 50)
 
-MARKETS = {
-    "Cambodia 🇰🇭 (KH)": "KH",
-    "Singapore 🇸🇬 (SG)": "SG"
-}
-
-selected_market_label = st.sidebar.selectbox(
-    "Market",
-    options=list(MARKETS.keys()),
-    index=0,
-    help="Select the region to load local matching rules and boundary settings."
-)
-
-market_code = MARKETS[selected_market_label]
-
-st.sidebar.subheader("Match Thresholds")
-
-p3_threshold = st.sidebar.slider(
-    "P3 Potential Match starts at (%)",
-    min_value=40, max_value=80, value=50, step=5,
-    help="Name similarity score range for manual rep verification."
-) / 100.0
-
-p4_threshold = st.sidebar.slider(
-    "P4 Duplicate starts at (%)",
-    min_value=60, max_value=95, value=75, step=5,
-    help="Name similarity score at or above which a lead is marked as a Duplicate."
-) / 100.0
-
-proximity_radius = st.sidebar.slider(
-    "GPS Proximity Radius (Meters)",
-    min_value=50, max_value=1000, value=200, step=50,
-    help="Radius around lead GPS coordinates to scan for existing CRM accounts."
-)
-
-default_categories = [
-    "restaurant", "cafe", "coffee", "bakery", "food", "noodle", "asian restaurant",
-    "fast food", "bubble tea", "dessert", "barbecue", "khmer restaurant", "bistro", "pub"
-]
-
-fnb_categories_input = st.sidebar.text_area(
-    "Eligible F&B Categories (comma separated)",
-    value=", ".join(default_categories),
-    help="Google Maps categories considered valid for food delivery onboarding."
-)
-
+default_categories = ["restaurant", "cafe", "coffee", "bakery", "food", "noodle", "fast food", "bubble tea", "bistro", "pub"]
+fnb_categories_input = st.sidebar.text_area("Eligible F&B Categories", ", ".join(default_categories))
 valid_categories_list = [c.strip().lower() for c in fnb_categories_input.split(",") if c.strip()]
 
 st.markdown('<p class="main-title">🎯 Sales Ops · Lead Classifier</p>', unsafe_allow_html=True)
 st.markdown('<p class="sub-title"><b>Delivery Hero / foodpanda Cambodia</b> · Digital Sales APAC — Phnom Penh & Provinces</p>', unsafe_allow_html=True)
 
-# Password Gate Check
 if APP_PASSWORD:
     pwd_input = st.sidebar.text_input("🔑 App Password", type="password")
     if pwd_input != APP_PASSWORD:
@@ -398,37 +300,13 @@ if APP_PASSWORD:
 
 tab1, tab2, tab3, tab4 = st.tabs([
     "📊 Classify Leads",
-    "🔗 Generate Apify URLs",
+    "🔗 Generate Apify URLs & Add GRID",
     "🏢 SF Account Audit",
     "📖 How to Use"
 ])
 
 with tab1:
-    with st.expander("📎 How to get your files — click to expand", expanded=False):
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("**Step 1 · Leads file (Salesforce)**")
-            st.link_button(
-                "Open Cambodia Leads Report →",
-                "https://deliveryhero.lightning.force.com/lightning/r/Report/00ObO000008clm5UAA/view?",
-                use_container_width=True
-            )
-        with c2:
-            st.markdown("**Step 2 · CRM Export (Salesforce)**")
-            st.link_button(
-                "Open Cambodia CRM Report →",
-                "https://deliveryhero.lightning.force.com/lightning/r/Report/00ObO000008cmAHUAY/view?queryScope=userFolders",
-                use_container_width=True
-            )
-        st.info(
-            "🔗 **For Apify Results:** Go to the **Generate Apify URLs** tab → "
-            "Step 1 generates your search URLs → paste into Apify Google Maps scraper → "
-            "Step 2 enriches the output with the GRID column automatically."
-        )
-
     st.subheader("1. Upload Input Files")
-    st.caption("Upload the Salesforce Leads export, Apify Google Maps scrape results, and Salesforce All Accounts CRM export.")
-
     col1, col2, col3 = st.columns(3)
     
     with col1:
@@ -438,70 +316,50 @@ with tab1:
     with col3:
         crm_file = st.file_uploader("3️⃣ CRM All Accounts (.xlsx / .csv)", type=["xlsx", "csv"], key="crm")
 
-    zones_file = st.file_uploader("🗺️ (Optional) Delivery Zones GeoJSON/JSON (`zones_KH.json`)", type=["json"], key="zones")
-
-    loaded_zones = []
-    if zones_file:
-        try:
-            loaded_zones = json.load(zones_file)
-            st.success(f"Loaded {len(loaded_zones)} delivery coverage zones.")
-        except Exception as e:
-            st.error(f"Error loading zones JSON: {e}")
-
     if st.button("🚀 Run Lead Classification", type="primary", use_container_width=True):
         if not leads_file or not crm_file:
             st.error("Please upload at least the **Leads File** and the **CRM All Accounts File** to proceed.")
         else:
-            with st.spinner("Processing files and executing Cambodian matching cascade..."):
+            with st.spinner("Classifying leads..."):
                 try:
                     df_leads = pd.read_excel(leads_file) if leads_file.name.endswith('.xlsx') else pd.read_csv(leads_file)
                     df_crm = pd.read_excel(crm_file) if crm_file.name.endswith('.xlsx') else pd.read_csv(crm_file)
-                    
-                    df_apify = None
-                    if apify_file:
-                        df_apify = pd.read_excel(apify_file) if apify_file.name.endswith('.xlsx') else pd.read_csv(apify_file)
+                    df_apify = pd.read_excel(apify_file) if apify_file and apify_file.name.endswith('.xlsx') else (pd.read_csv(apify_file) if apify_file else None)
 
                     lead_cols = {
-                        'grid': resolve_column(df_leads, ['GRID', 'Lead ID', 'Id', 'Lead_GRID']),
-                        'name': resolve_column(df_leads, ['Company / Account', 'Company', 'Lead Name', 'Account Name', 'Name']),
-                        'street': resolve_column(df_leads, ['Street / Street No.', 'Street', 'Address', 'Street Address']),
-                        'sangkat': resolve_column(df_leads, ['Sangkat / Khan / Province', 'Sangkat', 'District', 'City', 'State']),
-                        'lat': resolve_column(df_leads, ['Coordinates (Latitude)', 'Latitude', 'Lat', 'location/lat']),
-                        'lng': resolve_column(df_leads, ['Coordinates (Longitude)', 'Longitude', 'Lng', 'Lng/Lat', 'location/lng'])
+                        'grid': resolve_column(df_leads, ['GRID', 'Lead ID', 'Id']),
+                        'name': resolve_column(df_leads, ['Company / Account', 'Company', 'Lead Name', 'Name']),
+                        'street': resolve_column(df_leads, ['Street / Street No.', 'Street', 'Address']),
+                        'sangkat': resolve_column(df_leads, ['Sangkat / Khan / Province', 'Sangkat', 'District', 'City']),
+                        'lat': resolve_column(df_leads, ['Coordinates (Latitude)', 'Latitude', 'Lat']),
+                        'lng': resolve_column(df_leads, ['Coordinates (Longitude)', 'Longitude', 'Lng'])
                     }
 
                     crm_cols = {
                         'grid': resolve_column(df_crm, ['GRID', 'Account ID', 'Id']),
-                        'name': resolve_column(df_crm, ['Account Name', 'Company Name', 'Name']),
-                        'sangkat': resolve_column(df_crm, ['Sangkat / Khan', 'Sangkat', 'District', 'BillingCity']),
-                        'lat': resolve_column(df_crm, ['Latitude', 'Lat', 'BillingLatitude']),
-                        'lng': resolve_column(df_crm, ['Longitude', 'Lng', 'BillingLongitude']),
-                        'address': resolve_column(df_crm, ['Formatted Restaurant Address', 'BillingStreet', 'Address'])
+                        'name': resolve_column(df_crm, ['Account Name', 'Name']),
+                        'sangkat': resolve_column(df_crm, ['Sangkat / Khan', 'Sangkat', 'District']),
+                        'lat': resolve_column(df_crm, ['Latitude', 'Lat']),
+                        'lng': resolve_column(df_crm, ['Longitude', 'Lng'])
                     }
 
-                    # Expanded Apify column mapping (GRID + inputUrl)
                     apify_cols = {}
                     if df_apify is not None:
                         apify_cols = {
                             'grid': resolve_column(df_apify, ['GRID', 'lead_grid', 'Input_GRID']),
-                            'input_url': resolve_column(df_apify, ['inputUrl', 'searchUrl', 'url', 'input_url']),
-                            'title': resolve_column(df_apify, ['title', 'name', 'placeName']),
-                            'category': resolve_column(df_apify, ['categoryName', 'category', 'primaryCategory']),
+                            'input_url': resolve_column(df_apify, ['inputUrl', 'searchUrl', 'url']),
+                            'category': resolve_column(df_apify, ['categoryName', 'category']),
                             'perm_closed': resolve_column(df_apify, ['permanentlyClosed', 'permanently_closed']),
                             'temp_closed': resolve_column(df_apify, ['temporarilyClosed', 'temporarily_closed'])
                         }
 
                     results = []
-
                     for idx, lead_row in df_leads.iterrows():
                         grid_val = lead_row.get(lead_cols.get('grid', ''), idx)
                         
-                        # 1. CRM Match Cascade
                         crm_label, score, match_acc, match_reason = find_crm_matches(
                             lead_row, df_crm, lead_cols, crm_cols,
-                            radius_meters=proximity_radius,
-                            p4_threshold=p4_threshold,
-                            p3_threshold=p3_threshold
+                            radius_meters=proximity_radius, p4_threshold=p4_threshold, p3_threshold=p3_threshold
                         )
 
                         final_label = crm_label
@@ -509,17 +367,12 @@ with tab1:
                         matched_crm_name = match_acc.get(crm_cols.get('name', ''), '') if match_acc is not None else ""
                         matched_crm_grid = match_acc.get(crm_cols.get('grid', ''), '') if match_acc is not None else ""
 
-                        # 2. Apify Validation if no CRM match
                         if crm_label == "No CRM Match":
                             apify_match_row = None
                             if df_apify is not None:
                                 matched_rows = pd.DataFrame()
-                                
-                                # Match via GRID column
                                 if apify_cols.get('grid'):
                                     matched_rows = df_apify[df_apify[apify_cols['grid']].astype(str) == str(grid_val)]
-                                
-                                # Fallback match via inputUrl string
                                 if matched_rows.empty and apify_cols.get('input_url'):
                                     lead_name_str = str(lead_row.get(lead_cols.get('name', ''), '')).lower()
                                     if lead_name_str:
@@ -528,19 +381,9 @@ with tab1:
                                 if not matched_rows.empty:
                                     apify_match_row = matched_rows.iloc[0]
 
-                            apify_label, apify_reason = validate_apify_status(
-                                apify_match_row, apify_cols, valid_categories_list
-                            )
+                            apify_label, apify_reason = validate_apify_status(apify_match_row, apify_cols, valid_categories_list)
                             final_label = apify_label
                             reason = apify_reason
-
-                        # 3. Delivery zone check
-                        in_zone = True
-                        zone_name = "N/A"
-                        if loaded_zones and lead_cols.get('lat') and lead_cols.get('lng'):
-                            lat_v = lead_row.get(lead_cols['lat'])
-                            lng_v = lead_row.get(lead_cols['lng'])
-                            in_zone, zone_name = check_delivery_zone(lat_v, lng_v, loaded_zones)
 
                         res_row = lead_row.to_dict()
                         res_row['Final Classification'] = final_label
@@ -548,8 +391,6 @@ with tab1:
                         res_row['Match Score (%)'] = round(score, 1)
                         res_row['Matched CRM Account Name'] = matched_crm_name
                         res_row['Matched CRM GRID'] = matched_crm_grid
-                        res_row['Delivery Zone Coverage'] = zone_name if loaded_zones else "Not Checked"
-                        
                         results.append(res_row)
 
                     out_df = pd.DataFrame(results)
@@ -568,7 +409,7 @@ with tab1:
 
                     excel_bytes = export_to_excel(out_df)
                     st.download_button(
-                        label="📥 Download Excel Report (Color-Coded Sheets)",
+                        label="📥 Download Excel Report",
                         data=excel_bytes,
                         file_name="Cambodia_Classified_Leads_Report.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -577,26 +418,23 @@ with tab1:
 
                 except Exception as e:
                     st.error(f"Error during classification: {str(e)}")
-                    st.exception(e)
 
 with tab2:
-    st.subheader("🔗 Step 1: Generate Apify Google Maps Search URLs")
-    st.caption("Upload your leads file to generate search URLs containing GRID identifiers.")
+    st.markdown("## Step 1 · Generate URLs")
+    st.caption("Upload your leads file to generate search URLs for Apify.")
 
-    leads_file_tab2 = st.file_uploader("Upload Leads File (.xlsx / .csv)", type=["xlsx", "csv"], key="leads_tab2")
+    step1_file = st.file_uploader("Upload leads file (.xlsx or .csv)", type=["xlsx", "csv"], key="step1_upload")
 
-    if leads_file_tab2:
-        df_urls_input = pd.read_excel(leads_file_tab2) if leads_file_tab2.name.endswith('.xlsx') else pd.read_csv(leads_file_tab2)
+    if step1_file:
+        df_step1 = pd.read_excel(step1_file) if step1_file.name.endswith('.xlsx') else pd.read_csv(step1_file)
         
-        grid_col = resolve_column(df_urls_input, ['GRID', 'Lead ID', 'Id', 'Lead_GRID'])
-        name_col = resolve_column(df_urls_input, ['Company / Account', 'Company', 'Lead Name', 'Account Name', 'Name'])
-        sangkat_col = resolve_column(df_urls_input, ['Sangkat / Khan / Province', 'Sangkat', 'District', 'City', 'Street / Street No.', 'Street'])
+        grid_col = resolve_column(df_step1, ['GRID', 'Lead ID', 'Id'])
+        name_col = resolve_column(df_step1, ['Company / Account', 'Company', 'Lead Name', 'Name'])
+        sangkat_col = resolve_column(df_step1, ['Sangkat / Khan / Province', 'Sangkat', 'District', 'City', 'Street'])
 
-        if not name_col:
-            st.error("Could not find a Company/Name column in the uploaded file.")
-        else:
-            url_records = []
-            for idx, row in df_urls_input.iterrows():
+        if name_col:
+            generated_data = []
+            for idx, row in df_step1.iterrows():
                 grid_val = row.get(grid_col, f"GRID_{idx}") if grid_col else f"GRID_{idx}"
                 name_val = str(row.get(name_col, '')).strip()
                 sangkat_val = str(row.get(sangkat_col, '')).strip() if sangkat_col else ""
@@ -605,80 +443,111 @@ with tab2:
                 encoded_q = re.sub(r'\s+', '+', search_term)
                 google_url = f"https://www.google.com/maps/search/{encoded_q}"
                 
-                url_records.append({
+                generated_data.append({
                     "GRID": grid_val,
                     "Company Name": name_val,
                     "Search Query": search_term,
-                    "Google Maps Search URL": google_url
+                    "url": google_url
                 })
             
-            df_generated_urls = pd.DataFrame(url_records)
-            st.success(f"Successfully generated {len(df_generated_urls)} URLs!")
-            st.dataframe(df_generated_urls, use_container_width=True)
-            
-            csv_urls = df_generated_urls.to_csv(index=False).encode('utf-8')
+            df_generated = pd.DataFrame(generated_data)
+            st.session_state['generated_urls_df'] = df_generated
+            st.success(f"Generated {len(df_generated)} URLs.")
+            st.dataframe(df_generated, use_container_width=True)
+
+            csv_data = df_generated.to_csv(index=False).encode('utf-8')
             st.download_button(
-                label="📥 Download Generated URLs CSV (Upload to Apify)",
-                data=csv_urls,
-                file_name="Apify_Input_URLs_Cambodia.csv",
+                "📥 Download Generated URLs CSV (Upload to Apify)",
+                data=csv_data,
+                file_name="Apify_Generated_URLs.csv",
                 mime="text/csv",
                 type="primary"
             )
 
+    st.divider()
+    st.markdown("## Step 2 · Add GRID to your Apify Export")
+    st.caption("After running Apify, upload your export here. The tool matches each row via `inputUrl` and adds a `GRID` column.")
+
+    if 'generated_urls_df' not in st.session_state:
+        st.info("No URLs generated this session yet. Upload your URL CSV below if generated in a previous session.")
+        prev_url_file = st.file_uploader("Upload URL CSV (from previous session)", type=["csv", "xlsx"], key="prev_urls")
+        if prev_url_file:
+            st.session_state['generated_urls_df'] = pd.read_excel(prev_url_file) if prev_url_file.name.endswith('.xlsx') else pd.read_csv(prev_url_file)
+
+    apify_export_file = st.file_uploader("Upload Apify export (.csv or .xlsx)", type=["csv", "xlsx"], key="apify_export")
+
+    if apify_export_file:
+        if 'generated_urls_df' in st.session_state:
+            df_gen_urls = st.session_state['generated_urls_df']
+            df_apify_raw = pd.read_excel(apify_export_file) if apify_export_file.name.endswith('.xlsx') else pd.read_csv(apify_export_file)
+
+            input_url_col = resolve_column(df_apify_raw, ['inputUrl', 'searchUrl', 'url'])
+            
+            if input_url_col:
+                # Merge Apify export with generated URLs matching on URL
+                gen_url_col = resolve_column(df_gen_urls, ['url', 'Google Maps Search URL'])
+                gen_grid_col = resolve_column(df_gen_urls, ['GRID'])
+
+                if gen_url_col and gen_grid_col:
+                    merged_df = pd.merge(
+                        df_apify_raw,
+                        df_gen_urls[[gen_url_col, gen_grid_col]],
+                        left_on=input_url_col,
+                        right_on=gen_url_col,
+                        how='left'
+                    )
+                    st.success("Successfully matched and added GRID column!")
+                    st.dataframe(merged_df, use_container_width=True)
+
+                    enriched_csv = merged_df.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        "📥 Download Enriched Apify Export with GRID",
+                        data=enriched_csv,
+                        file_name="Apify_Export_With_GRID.csv",
+                        mime="text/csv",
+                        type="primary"
+                    )
+                else:
+                    st.error("The reference URLs dataframe is missing the 'url' or 'GRID' column.")
+            else:
+                st.error("Could not find `inputUrl` in the uploaded Apify export file.")
+        else:
+            st.warning("Please upload or generate URLs first before attaching GRID to Apify export.")
+
 with tab3:
     st.subheader("🏢 Salesforce CRM Internal Duplicate Audit")
-    st.caption("Upload your Salesforce CRM All Accounts list to discover duplicate records already existing inside Salesforce.")
-
-    crm_audit_file = st.file_uploader("Upload CRM Accounts File for Internal Audit", type=["xlsx", "csv"], key="crm_audit")
+    crm_audit_file = st.file_uploader("Upload CRM Accounts File", type=["xlsx", "csv"], key="crm_audit")
 
     if crm_audit_file and st.button("Run Internal Audit"):
-        with st.spinner("Analyzing CRM records for duplicates..."):
-            df_audit = pd.read_excel(crm_audit_file) if crm_audit_file.name.endswith('.xlsx') else pd.read_csv(crm_audit_file)
-            name_col = resolve_column(df_audit, ['Account Name', 'Name', 'Company'])
+        df_audit = pd.read_excel(crm_audit_file) if crm_audit_file.name.endswith('.xlsx') else pd.read_csv(crm_audit_file)
+        name_col = resolve_column(df_audit, ['Account Name', 'Name', 'Company'])
 
-            if not name_col:
-                st.error("Could not locate 'Account Name' column in uploaded file.")
-            elif not HAS_RAPIDFUZZ:
-                st.error("Missing package 'rapidfuzz'. Please run `pip install rapidfuzz`.")
+        if name_col and HAS_RAPIDFUZZ:
+            duplicates = []
+            records = df_audit.head(400).to_dict('records')
+            for i in range(len(records)):
+                for j in range(i + 1, len(records)):
+                    r1, r2 = records[i], records[j]
+                    n1, n2 = normalize_cambodian_text(r1.get(name_col)), normalize_cambodian_text(r2.get(name_col))
+                    if n1 and n2:
+                        score = fuzz.token_set_ratio(n1, n2) / 100.0
+                        if score >= p4_threshold:
+                            duplicates.append({
+                                "Account 1": r1.get(name_col),
+                                "Account 2": r2.get(name_col),
+                                "Similarity Score (%)": round(score * 100.0, 1)
+                            })
+            if duplicates:
+                st.warning(f"Found {len(duplicates)} duplicate pairs!")
+                st.dataframe(pd.DataFrame(duplicates), use_container_width=True)
             else:
-                duplicates = []
-                num_records = min(len(df_audit), 400)
-                records = df_audit.head(num_records).to_dict('records')
-
-                for i in range(len(records)):
-                    for j in range(i + 1, len(records)):
-                        r1, r2 = records[i], records[j]
-                        n1, n2 = normalize_cambodian_text(r1.get(name_col)), normalize_cambodian_text(r2.get(name_col))
-                        
-                        if n1 and n2:
-                            score = fuzz.token_set_ratio(n1, n2) / 100.0
-                            if score >= p4_threshold:
-                                duplicates.append({
-                                    "Account 1": r1.get(name_col),
-                                    "Account 2": r2.get(name_col),
-                                    "Similarity Score (%)": round(score * 100.0, 1),
-                                    "Audit Action": "Flagged Internal Duplicate"
-                                })
-
-                if duplicates:
-                    st.warning(f"Found {len(duplicates)} duplicate pairs within Salesforce CRM records!")
-                    st.dataframe(pd.DataFrame(duplicates), use_container_width=True)
-                else:
-                    st.success("No internal duplicate records found above threshold.")
+                st.success("No duplicates found above threshold.")
 
 with tab4:
     st.markdown("""
     ### 📖 Cambodian Lead Classifier Guide
-    
-    #### Matching Logic Overview
-    1. **Geographic Proximity First:** Evaluates CRM accounts within a configurable radius (default 200m) or within the same **Sangkat / Khan** (commune/district).
-    2. **Multilingual Text Matching:** Normalizes Khmer script (`ភាសាខ្មែរ`), Romanized Khmer transliterations, and English characters.
-    3. **Apify Google Maps Validation:** Verifies if non-CRM matched leads are active open food venues.
-
-    #### Required Salesforce Export Fields
-    - `GRID`
-    - `Company / Account`
-    - `Street / Street No.`
-    - `Sangkat / Khan / Province`
-    - `Coordinates (Latitude)` & `Coordinates (Longitude)`
+    1. **Tab 2 (Step 1):** Upload Salesforce leads to generate search URLs.
+    2. **Apify Console:** Run Google Maps Scraper on generated URLs.
+    3. **Tab 2 (Step 2):** Upload the scraped Apify dataset to attach the `GRID` column.
+    4. **Tab 1:** Upload all 3 files (Leads, Enriched Apify, CRM) to classify and export your leads report.
     """)
