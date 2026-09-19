@@ -298,28 +298,72 @@ if APP_PASSWORD:
         st.info("🔒 Please enter the correct password in the sidebar to access the classifier tool.")
         st.stop()
 
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📊 Classify Leads",
-    "🔗 Generate Apify URLs & Add GRID",
+tab1, tab2, tab3 = st.tabs([
+    "📊 Classify Leads & Generate URLs",
     "🏢 SF Account Audit",
     "📖 How to Use"
 ])
 
 with tab1:
-    st.subheader("1. Upload Input Files")
+    # ------------------ GENERATE APFY URLS SECTION IN TAB 1 ------------------
+    st.markdown("## 🔗 Step 1 · Generate Apify URLs")
+    st.caption("Upload your leads file to automatically generate Google Maps search URLs formatted for Apify.")
+
+    step1_file = st.file_uploader("Upload SF Leads File (.xlsx or .csv)", type=["xlsx", "csv"], key="step1_tab1_upload")
+
+    if step1_file:
+        df_step1 = pd.read_excel(step1_file) if step1_file.name.endswith('.xlsx') else pd.read_csv(step1_file)
+        
+        grid_col = resolve_column(df_step1, ['GRID', 'Lead ID', 'Id'])
+        name_col = resolve_column(df_step1, ['Company / Account', 'Company', 'Lead Name', 'Name'])
+        sangkat_col = resolve_column(df_step1, ['Sangkat / Khan / Province', 'Sangkat', 'District', 'City', 'Street'])
+
+        if name_col:
+            generated_data = []
+            for idx, row in df_step1.iterrows():
+                grid_val = row.get(grid_col, f"GRID_{idx}") if grid_col else f"GRID_{idx}"
+                name_val = str(row.get(name_col, '')).strip()
+                sangkat_val = str(row.get(sangkat_col, '')).strip() if sangkat_col else ""
+                
+                search_term = f"{name_val} {sangkat_val} Cambodia".strip()
+                encoded_q = re.sub(r'\s+', '+', search_term)
+                google_url = f"https://www.google.com/maps/search/{encoded_q}"
+                
+                generated_data.append({
+                    "GRID": grid_val,
+                    "Company Name": name_val,
+                    "Search Query": search_term,
+                    "url": google_url
+                })
+            
+            df_generated = pd.DataFrame(generated_data)
+            st.session_state['generated_urls_df'] = df_generated
+            st.success(f"Generated {len(df_generated)} URLs!")
+            st.dataframe(df_generated, use_container_width=True)
+
+            csv_data = df_generated.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "📥 Download Generated URLs CSV (Upload to Apify)",
+                data=csv_data,
+                file_name="Apify_Generated_URLs.csv",
+                mime="text/csv",
+                type="primary"
+            )
+
+    st.divider()
+
+    # ------------------ LEAD CLASSIFICATION SECTION IN TAB 1 ------------------
+    st.markdown("## 📊 Step 2 · Run Lead Classification")
+    st.caption("Upload your Salesforce Leads export, Apify scrape results, and CRM All Accounts list.")
+
     col1, col2, col3 = st.columns(3)
     
     with col1:
         leads_file = st.file_uploader("1️⃣ SF Leads File (.xlsx / .csv)", type=["xlsx", "csv"], key="leads")
     with col2:
         apify_file = st.file_uploader("2️⃣ Apify Results File (.xlsx / .csv)", type=["xlsx", "csv"], key="apify")
-        
-        # Display session state notification for auto-loaded target files
-        if 'enriched_apify_df' in st.session_state:
-            st.success("✅ Target file auto-loaded from Tab 2 (Step 2: Enriched Apify Export)!")
-        elif 'generated_urls_df' in st.session_state:
-            st.info("ℹ️ Target URLs auto-loaded from Tab 2 (Step 1: Generated Search URLs).")
-            
+        if 'generated_urls_df' in st.session_state:
+            st.info("ℹ️ Generated URLs auto-saved in session.")
     with col3:
         crm_file = st.file_uploader("3️⃣ CRM All Accounts (.xlsx / .csv)", type=["xlsx", "csv"], key="crm")
 
@@ -332,14 +376,11 @@ with tab1:
                     df_leads = pd.read_excel(leads_file) if leads_file.name.endswith('.xlsx') else pd.read_csv(leads_file)
                     df_crm = pd.read_excel(crm_file) if crm_file.name.endswith('.xlsx') else pd.read_csv(crm_file)
                     
-                    # Target selection cascade: Enriched Apify -> Generated URLs -> Uploaded File
                     df_apify = None
-                    if 'enriched_apify_df' in st.session_state:
-                        df_apify = st.session_state['enriched_apify_df']
+                    if apify_file:
+                        df_apify = pd.read_excel(apify_file) if apify_file.name.endswith('.xlsx') else pd.read_csv(apify_file)
                     elif 'generated_urls_df' in st.session_state:
                         df_apify = st.session_state['generated_urls_df']
-                    elif apify_file:
-                        df_apify = pd.read_excel(apify_file) if apify_file.name.endswith('.xlsx') else pd.read_csv(apify_file)
 
                     lead_cols = {
                         'grid': resolve_column(df_leads, ['GRID', 'Lead ID', 'Id']),
@@ -411,7 +452,7 @@ with tab1:
                     out_df = pd.DataFrame(results)
 
                     st.divider()
-                    st.subheader("2. Classification Results Summary")
+                    st.subheader("Classification Results Summary")
 
                     m1, m2, m3, m4, m5 = st.columns(5)
                     m1.metric("Total Leads", len(out_df))
@@ -435,105 +476,6 @@ with tab1:
                     st.error(f"Error during classification: {str(e)}")
 
 with tab2:
-    st.markdown("## Step 1 · Generate URLs")
-    st.caption("Upload your leads file to generate search URLs for Apify.")
-
-    step1_file = st.file_uploader("Upload leads file (.xlsx or .csv)", type=["xlsx", "csv"], key="step1_upload")
-
-    if step1_file:
-        df_step1 = pd.read_excel(step1_file) if step1_file.name.endswith('.xlsx') else pd.read_csv(step1_file)
-        
-        grid_col = resolve_column(df_step1, ['GRID', 'Lead ID', 'Id'])
-        name_col = resolve_column(df_step1, ['Company / Account', 'Company', 'Lead Name', 'Name'])
-        sangkat_col = resolve_column(df_step1, ['Sangkat / Khan / Province', 'Sangkat', 'District', 'City', 'Street'])
-
-        if name_col:
-            generated_data = []
-            for idx, row in df_step1.iterrows():
-                grid_val = row.get(grid_col, f"GRID_{idx}") if grid_col else f"GRID_{idx}"
-                name_val = str(row.get(name_col, '')).strip()
-                sangkat_val = str(row.get(sangkat_col, '')).strip() if sangkat_col else ""
-                
-                search_term = f"{name_val} {sangkat_val} Cambodia".strip()
-                encoded_q = re.sub(r'\s+', '+', search_term)
-                google_url = f"https://www.google.com/maps/search/{encoded_q}"
-                
-                generated_data.append({
-                    "GRID": grid_val,
-                    "Company Name": name_val,
-                    "Search Query": search_term,
-                    "url": google_url
-                })
-            
-            df_generated = pd.DataFrame(generated_data)
-            # Store target URLs dataframe directly in session state for Tab 1
-            st.session_state['generated_urls_df'] = df_generated
-            st.success(f"Generated {len(df_generated)} URLs! Target dataset auto-saved for Tab 1.")
-            st.dataframe(df_generated, use_container_width=True)
-
-            csv_data = df_generated.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                "📥 Download Generated URLs CSV (Upload to Apify)",
-                data=csv_data,
-                file_name="Apify_Generated_URLs.csv",
-                mime="text/csv",
-                type="primary"
-            )
-
-    st.divider()
-    st.markdown("## Step 2 · Add GRID to your Apify Export")
-    st.caption("After running Apify, upload your export here. The tool matches each row via `inputUrl` and adds a `GRID` column.")
-
-    if 'generated_urls_df' not in st.session_state:
-        st.info("No URLs generated this session yet. Upload your URL CSV below if generated in a previous session.")
-        prev_url_file = st.file_uploader("Upload URL CSV (from previous session)", type=["csv", "xlsx"], key="prev_urls")
-        if prev_url_file:
-            st.session_state['generated_urls_df'] = pd.read_excel(prev_url_file) if prev_url_file.name.endswith('.xlsx') else pd.read_csv(prev_url_file)
-
-    apify_export_file = st.file_uploader("Upload Apify export (.csv or .xlsx)", type=["csv", "xlsx"], key="apify_export")
-
-    if apify_export_file:
-        if 'generated_urls_df' in st.session_state:
-            df_gen_urls = st.session_state['generated_urls_df']
-            df_apify_raw = pd.read_excel(apify_export_file) if apify_export_file.name.endswith('.xlsx') else pd.read_csv(apify_export_file)
-
-            input_url_col = resolve_column(df_apify_raw, ['inputUrl', 'searchUrl', 'url', 'input_url', 'startUrl', 'query', 'url/url', 'input/url', 'Search Query'])
-            
-            if input_url_col:
-                gen_url_col = resolve_column(df_gen_urls, ['url', 'Google Maps Search URL', 'Search Query'])
-                gen_grid_col = resolve_column(df_gen_urls, ['GRID'])
-
-                if gen_url_col and gen_grid_col:
-                    merged_df = pd.merge(
-                        df_apify_raw,
-                        df_gen_urls[[gen_url_col, gen_grid_col]],
-                        left_on=input_url_col,
-                        right_on=gen_url_col,
-                        how='left'
-                    )
-                    
-                    # Store enriched target dataframe in session state for Tab 1
-                    st.session_state['enriched_apify_df'] = merged_df
-                    
-                    st.success("Successfully matched and added GRID column! Target data auto-loaded into Tab 1.")
-                    st.dataframe(merged_df, use_container_width=True)
-
-                    enriched_csv = merged_df.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        "📥 Download Enriched Apify Export with GRID",
-                        data=enriched_csv,
-                        file_name="Apify_Export_With_GRID.csv",
-                        mime="text/csv",
-                        type="primary"
-                    )
-                else:
-                    st.error("The reference URLs dataframe is missing the 'url' or 'GRID' column.")
-            else:
-                st.error("Could not find `inputUrl` in the uploaded Apify export file. Available columns in your uploaded file are: " + ", ".join(list(df_apify_raw.columns[:10])))
-        else:
-            st.warning("Please upload or generate URLs first before attaching GRID to Apify export.")
-
-with tab3:
     st.subheader("🏢 Salesforce CRM Internal Duplicate Audit")
     crm_audit_file = st.file_uploader("Upload CRM Accounts File", type=["xlsx", "csv"], key="crm_audit")
 
@@ -562,11 +504,10 @@ with tab3:
             else:
                 st.success("No duplicates found above threshold.")
 
-with tab4:
+with tab3:
     st.markdown("""
     ### 📖 Cambodian Lead Classifier Guide
-    1. **Tab 2 (Step 1):** Upload Salesforce leads to generate search URLs.
-    2. **Apify Console:** Run Google Maps Scraper on generated URLs.
-    3. **Tab 2 (Step 2):** Upload the scraped Apify dataset to attach the `GRID` column.
-    4. **Tab 1:** Target file auto-loads! Just upload your Salesforce Leads & CRM files to classify and export your report.
+    1. **Step 1 (Tab 1):** Upload Salesforce leads to generate search URLs for Apify.
+    2. **Apify Console:** Run Google Maps Scraper using the generated URLs.
+    3. **Step 2 (Tab 1):** Upload all 3 files (Leads, Apify Output, CRM) and click **Run Lead Classification**.
     """)
