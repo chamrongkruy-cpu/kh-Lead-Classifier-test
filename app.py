@@ -307,6 +307,28 @@ tab1, tab2, tab3, tab4 = st.tabs([
 ])
 
 with tab1:
+    # ------------------ EXPANDER: HOW TO GET YOUR FILES ------------------
+    with st.expander("📎 How to get your files — click to expand", expanded=False):
+        exp_col1, exp_col2 = st.columns(2)
+        with exp_col1:
+            st.markdown("**Step 1 · Leads file (Salesforce)**")
+            st.link_button(
+                "Open Leads Report →",
+                "https://deliveryhero.lightning.force.com/lightning/r/Report/00ObO000008clm5UAA/view?",
+                use_container_width=True
+            )
+        with exp_col2:
+            st.markdown("**Step 2 · CRM Export (Salesforce)**")
+            st.link_button(
+                "Open Cambodia CRM Report →",
+                "https://deliveryhero.lightning.force.com/lightning/r/Report/00ObO000008cmAHUAY/view?queryScope=userFolders",
+                use_container_width=True
+            )
+        st.info(
+            "🔗 **For Apify Results:** go to the **Generate Apify URLs** tab → "
+            "Step 1 generates your URLs + paste into Apify + Step 2 adds the GRID column to your Apify export automatically."
+        )
+
     st.subheader("1. Upload Input Files")
     col1, col2, col3 = st.columns(3)
     
@@ -467,7 +489,6 @@ with tab2:
             st.success(f"Generated {len(df_generated)} URLs.")
             st.dataframe(df_generated, use_container_width=True)
 
-            # Display formatted links box for copy-pasting directly into Apify
             generated_targets_text = "\n".join(df_generated["url"].tolist())
             st.text_area("Generated targets", value=generated_targets_text, height=200)
 
