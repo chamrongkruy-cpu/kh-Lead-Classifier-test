@@ -5,6 +5,7 @@ import re
 import io
 import json
 import math
+import urllib.parse
 from typing import Tuple, Dict, Any, List, Optional
 
 # Attempt optional library imports with safe fallbacks
@@ -358,7 +359,7 @@ with tab1:
                     if df_apify is not None:
                         apify_cols = {
                             'grid': resolve_column(df_apify, ['GRID', 'lead_grid', 'Input_GRID']),
-                            'input_url': resolve_column(df_apify, ['inputUrl', 'searchUrl', 'url', 'input_url', 'startUrl', 'query', 'url/url', 'input/url', 'Search Query', 'Generated Target']),
+                            'input_url': resolve_column(df_apify, ['inputUrl', 'searchUrl', 'url', 'input_url', 'startUrl', 'query', 'url/url', 'input/url', 'Search Query']),
                             'category': resolve_column(df_apify, ['categoryName', 'category']),
                             'perm_closed': resolve_column(df_apify, ['permanentlyClosed', 'permanently_closed']),
                             'temp_closed': resolve_column(df_apify, ['temporarilyClosed', 'temporarily_closed'])
@@ -432,7 +433,7 @@ with tab1:
 
 with tab2:
     st.markdown("## Step 1 · Generate URLs")
-    st.caption("Upload your leads file to generate search URLs for Apify with Generated Target.")
+    st.caption("Upload your leads file to generate search URLs for Apify.")
 
     step1_file = st.file_uploader("Upload leads file (.xlsx or .csv)", type=["xlsx", "csv"], key="step1_upload")
 
@@ -450,22 +451,25 @@ with tab2:
                 name_val = str(row.get(name_col, '')).strip()
                 sangkat_val = str(row.get(sangkat_col, '')).strip() if sangkat_col else ""
                 
-                search_term = f"{name_val} {sangkat_val} Cambodia".strip()
-                encoded_q = re.sub(r'\s+', '+', search_term)
-                google_url = f"https://www.google.com/maps/search/{encoded_q}"
+                full_query = f"{name_val} {sangkat_val} Cambodia".strip()
+                encoded_q = urllib.parse.quote(full_query)
+                google_url = f"https://www.google.com/maps/search/?api=1&query={encoded_q}"
                 
                 generated_data.append({
                     "GRID": grid_val,
                     "Company Name": name_val,
-                    "Search Query": search_term,
-                    "Generated Target": search_term,
+                    "Search Query": full_query,
                     "url": google_url
                 })
             
             df_generated = pd.DataFrame(generated_data)
             st.session_state['generated_urls_df'] = df_generated
-            st.success(f"Generated {len(df_generated)} URLs with Generated Target.")
+            st.success(f"Generated {len(df_generated)} URLs.")
             st.dataframe(df_generated, use_container_width=True)
+
+            # Display formatted links box for copy-pasting directly into Apify
+            generated_targets_text = "\n".join(df_generated["url"].tolist())
+            st.text_area("Generated targets", value=generated_targets_text, height=200)
 
             csv_data = df_generated.to_csv(index=False).encode('utf-8')
             st.download_button(
@@ -493,10 +497,10 @@ with tab2:
             df_gen_urls = st.session_state['generated_urls_df']
             df_apify_raw = pd.read_excel(apify_export_file) if apify_export_file.name.endswith('.xlsx') else pd.read_csv(apify_export_file)
 
-            input_url_col = resolve_column(df_apify_raw, ['inputUrl', 'searchUrl', 'url', 'input_url', 'startUrl', 'query', 'url/url', 'input/url', 'Search Query', 'Generated Target'])
+            input_url_col = resolve_column(df_apify_raw, ['inputUrl', 'searchUrl', 'url', 'input_url', 'startUrl', 'query', 'url/url', 'input/url', 'Search Query'])
             
             if input_url_col:
-                gen_url_col = resolve_column(df_gen_urls, ['url', 'Google Maps Search URL', 'Search Query', 'Generated Target'])
+                gen_url_col = resolve_column(df_gen_urls, ['url', 'Google Maps Search URL', 'Search Query'])
                 gen_grid_col = resolve_column(df_gen_urls, ['GRID'])
 
                 if gen_url_col and gen_grid_col:
@@ -558,7 +562,7 @@ with tab3:
 with tab4:
     st.markdown("""
     ### 📖 Cambodian Lead Classifier Guide
-    1. **Tab 2 (Step 1):** Upload Salesforce leads to generate search URLs + Generated Target for Apify.
+    1. **Tab 2 (Step 1):** Upload Salesforce leads to generate search URLs for Apify.
     2. **Apify Console:** Run Google Maps Scraper on generated URLs.
     3. **Tab 2 (Step 2):** Upload the scraped Apify dataset to attach the `GRID` column.
     4. **Tab 1:** Upload all 3 files (Leads, Apify Output, CRM) and click **Run Lead Classification**.
