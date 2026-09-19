@@ -307,7 +307,6 @@ tab1, tab2, tab3, tab4 = st.tabs([
 ])
 
 with tab1:
-    # ------------------ EXPANDER: HOW TO GET YOUR FILES ------------------
     with st.expander("📎 How to get your files — click to expand", expanded=False):
         exp_col1, exp_col2 = st.columns(2)
         with exp_col1:
@@ -503,13 +502,19 @@ with tab2:
 
     st.divider()
     st.markdown("## Step 2 · Add GRID to your Apify Export")
-    st.caption("After running Apify, upload your export here. The tool matches each row via `inputUrl` and adds a `GRID` column.")
+    st.caption("After running Apify, upload your export here. The tool matches each row via `inputStartUrl` and adds a `GRID` column.")
 
-    if 'generated_urls_df' not in st.session_state:
-        st.info("No URLs generated this session yet. Upload your URL CSV below if generated in a previous session.")
-        prev_url_file = st.file_uploader("Upload URL CSV (from previous session)", type=["csv", "xlsx"], key="prev_urls")
+    # Show green success notification if GRID session state exists
+    if 'generated_urls_df' in st.session_state:
+        num_grids = len(st.session_state['generated_urls_df'])
+        st.success(f"✅ {num_grids} GRIDs ready from Step 1 above.")
+
+    # Collapsible expander for fallback CSV upload
+    with st.expander("📂 Upload URL CSV (if you generated URLs in a previous session)", expanded=False):
+        prev_url_file = st.file_uploader("Upload URL CSV file", type=["csv", "xlsx"], key="prev_urls")
         if prev_url_file:
             st.session_state['generated_urls_df'] = pd.read_excel(prev_url_file) if prev_url_file.name.endswith('.xlsx') else pd.read_csv(prev_url_file)
+            st.success("Successfully loaded reference URL CSV!")
 
     apify_export_file = st.file_uploader("Upload Apify export (.csv or .xlsx)", type=["csv", "xlsx"], key="apify_export")
 
@@ -518,7 +523,7 @@ with tab2:
             df_gen_urls = st.session_state['generated_urls_df']
             df_apify_raw = pd.read_excel(apify_export_file) if apify_export_file.name.endswith('.xlsx') else pd.read_csv(apify_export_file)
 
-            input_url_col = resolve_column(df_apify_raw, ['inputUrl', 'searchUrl', 'url', 'input_url', 'startUrl', 'query', 'url/url', 'input/url', 'Search Query'])
+            input_url_col = resolve_column(df_apify_raw, ['inputStartUrl', 'inputUrl', 'searchUrl', 'url', 'input_url', 'startUrl', 'query', 'url/url', 'input/url', 'Search Query'])
             
             if input_url_col:
                 gen_url_col = resolve_column(df_gen_urls, ['url', 'Google Maps Search URL', 'Search Query'])
@@ -547,7 +552,7 @@ with tab2:
                 else:
                     st.error("The reference URLs dataframe is missing the 'url' or 'GRID' column.")
             else:
-                st.error("Could not find `inputUrl` in the uploaded Apify export file.")
+                st.error("Could not find `inputStartUrl` in the uploaded Apify export file.")
         else:
             st.warning("Please upload or generate URLs first before attaching GRID to Apify export.")
 
