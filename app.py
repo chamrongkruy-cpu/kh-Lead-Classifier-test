@@ -313,6 +313,13 @@ with tab1:
         leads_file = st.file_uploader("1️⃣ SF Leads File (.xlsx / .csv)", type=["xlsx", "csv"], key="leads")
     with col2:
         apify_file = st.file_uploader("2️⃣ Apify Results File (.xlsx / .csv)", type=["xlsx", "csv"], key="apify")
+        
+        # Display session state notification for auto-loaded target files
+        if 'enriched_apify_df' in st.session_state:
+            st.success("✅ Target file auto-loaded from Tab 2 (Step 2: Enriched Apify Export)!")
+        elif 'generated_urls_df' in st.session_state:
+            st.info("ℹ️ Target URLs auto-loaded from Tab 2 (Step 1: Generated Search URLs).")
+            
     with col3:
         crm_file = st.file_uploader("3️⃣ CRM All Accounts (.xlsx / .csv)", type=["xlsx", "csv"], key="crm")
 
@@ -324,7 +331,15 @@ with tab1:
                 try:
                     df_leads = pd.read_excel(leads_file) if leads_file.name.endswith('.xlsx') else pd.read_csv(leads_file)
                     df_crm = pd.read_excel(crm_file) if crm_file.name.endswith('.xlsx') else pd.read_csv(crm_file)
-                    df_apify = pd.read_excel(apify_file) if apify_file and apify_file.name.endswith('.xlsx') else (pd.read_csv(apify_file) if apify_file else None)
+                    
+                    # Target selection cascade: Enriched Apify -> Generated URLs -> Uploaded File
+                    df_apify = None
+                    if 'enriched_apify_df' in st.session_state:
+                        df_apify = st.session_state['enriched_apify_df']
+                    elif 'generated_urls_df' in st.session_state:
+                        df_apify = st.session_state['generated_urls_df']
+                    elif apify_file:
+                        df_apify = pd.read_excel(apify_file) if apify_file.name.endswith('.xlsx') else pd.read_csv(apify_file)
 
                     lead_cols = {
                         'grid': resolve_column(df_leads, ['GRID', 'Lead ID', 'Id']),
@@ -451,8 +466,9 @@ with tab2:
                 })
             
             df_generated = pd.DataFrame(generated_data)
+            # Store target URLs dataframe directly in session state for Tab 1
             st.session_state['generated_urls_df'] = df_generated
-            st.success(f"Generated {len(df_generated)} URLs.")
+            st.success(f"Generated {len(df_generated)} URLs! Target dataset auto-saved for Tab 1.")
             st.dataframe(df_generated, use_container_width=True)
 
             csv_data = df_generated.to_csv(index=False).encode('utf-8')
@@ -481,7 +497,6 @@ with tab2:
             df_gen_urls = st.session_state['generated_urls_df']
             df_apify_raw = pd.read_excel(apify_export_file) if apify_export_file.name.endswith('.xlsx') else pd.read_csv(apify_export_file)
 
-            # Extended column lookup to handle various Apify export formats
             input_url_col = resolve_column(df_apify_raw, ['inputUrl', 'searchUrl', 'url', 'input_url', 'startUrl', 'query', 'url/url', 'input/url', 'Search Query'])
             
             if input_url_col:
@@ -489,7 +504,6 @@ with tab2:
                 gen_grid_col = resolve_column(df_gen_urls, ['GRID'])
 
                 if gen_url_col and gen_grid_col:
-                    # Merge Apify export with generated URLs matching on URL or Query
                     merged_df = pd.merge(
                         df_apify_raw,
                         df_gen_urls[[gen_url_col, gen_grid_col]],
@@ -497,7 +511,11 @@ with tab2:
                         right_on=gen_url_col,
                         how='left'
                     )
-                    st.success("Successfully matched and added GRID column!")
+                    
+                    # Store enriched target dataframe in session state for Tab 1
+                    st.session_state['enriched_apify_df'] = merged_df
+                    
+                    st.success("Successfully matched and added GRID column! Target data auto-loaded into Tab 1.")
                     st.dataframe(merged_df, use_container_width=True)
 
                     enriched_csv = merged_df.to_csv(index=False).encode('utf-8')
@@ -550,5 +568,5 @@ with tab4:
     1. **Tab 2 (Step 1):** Upload Salesforce leads to generate search URLs.
     2. **Apify Console:** Run Google Maps Scraper on generated URLs.
     3. **Tab 2 (Step 2):** Upload the scraped Apify dataset to attach the `GRID` column.
-    4. **Tab 1:** Upload all 3 files (Leads, Enriched Apify, CRM) to classify and export your leads report.
+    4. **Tab 1:** Target file auto-loads! Just upload your Salesforce Leads & CRM files to classify and export your report.
     """)
