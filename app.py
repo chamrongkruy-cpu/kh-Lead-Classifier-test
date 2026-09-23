@@ -134,7 +134,7 @@ def find_crm_matches(
 ) -> Tuple[str, float, Optional[pd.Series], str]:
     lead_name = normalize_cambodian_text(lead_row.get(lead_cols.get('name', '')))
     if not lead_name:
-        return "P2 — Please Check", 0.0, None, "Blank Lead Name"
+        return "P2 — Please Check", 0.0, None, "No Apify result or no category found"
 
     lead_lat = lead_row.get(lead_cols.get('lat', ''))
     lead_lng = lead_row.get(lead_cols.get('lng', ''))
@@ -191,9 +191,9 @@ def find_crm_matches(
                 match_reason = f"Proximity ({int(dist_m)}m)" if dist_m < float('inf') else f"Sangkat Match ({crm_sangkat})"
 
     if best_score >= p4_threshold:
-        return "P4 — Duplicate", best_score * 100.0, best_match_row, match_reason
+        return "P4 — Duplicate", best_score * 100.0, best_match_row, f"Name ≥ {int(p4_threshold*100)}% at same location ({match_reason})"
     elif best_score >= p3_threshold:
-        return "P3 — Potential Match", best_score * 100.0, best_match_row, match_reason
+        return "P3 — Potential Match", best_score * 100.0, best_match_row, f"Name {int(p3_threshold*100)}–{int(p4_threshold*100)-1}% at same location ({match_reason})"
     else:
         return "No CRM Match", 0.0, None, "No CRM match above threshold"
 
@@ -203,23 +203,23 @@ def validate_apify_status(
     valid_categories: List[str]
 ) -> Tuple[str, str]:
     if apify_row is None:
-        return "P2 — Please Check", "No Apify result found on Google Maps"
+        return "P2 — Please Check", "No Apify result or no category found"
 
     cat_val = str(apify_row.get(apify_cols.get('category', ''), '')).lower().strip()
     perm_closed = str(apify_row.get(apify_cols.get('perm_closed', ''), '')).lower() in ['true', '1', 'yes']
     temp_closed = str(apify_row.get(apify_cols.get('temp_closed', ''), '')).lower() in ['true', '1', 'yes']
 
     if perm_closed or temp_closed:
-        return "Business Closed", "Closed on Google Maps"
+        return "Business Closed", "Apify: Google confirms permanently/temporarily closed"
 
     if not cat_val:
-        return "P2 — Please Check", "Category unmapped in Google Maps"
+        return "P2 — Please Check", "No Apify result or no category found"
 
     is_eligible = any(cat in cat_val or cat_val in cat for cat in valid_categories)
     if is_eligible:
-        return "P1 — New", f"Open F&B venue ({cat_val})"
+        return "P1 — New", "No CRM match, Apify-confirmed restaurant"
     else:
-        return "Wrong Target Group", f"Non-F&B category ({cat_val})"
+        return "Wrong Target Group", f"Apify: category not food-delivery eligible ({cat_val})"
 
 def export_to_excel(df_results: pd.DataFrame) -> bytes:
     output = io.BytesIO()
@@ -380,7 +380,7 @@ with tab1:
                     if df_apify is not None:
                         apify_cols = {
                             'grid': resolve_column(df_apify, ['GRID', 'lead_grid', 'Input_GRID']),
-                            'input_url': resolve_column(df_apify, ['inputUrl', 'searchUrl', 'url', 'input_url', 'startUrl', 'query', 'url/url', 'input/url', 'Search Query']),
+                            'input_url': resolve_column(df_apify, ['inputStartUrl', 'inputUrl', 'searchUrl', 'url', 'input_url', 'startUrl', 'query', 'url/url', 'input/url', 'Search Query']),
                             'category': resolve_column(df_apify, ['categoryName', 'category']),
                             'perm_closed': resolve_column(df_apify, ['permanentlyClosed', 'permanently_closed']),
                             'temp_closed': resolve_column(df_apify, ['temporarilyClosed', 'temporarily_closed'])
@@ -470,9 +470,13 @@ with tab2:
             for idx, row in df_step1.iterrows():
                 grid_val = row.get(grid_col, f"GRID_{idx}") if grid_col else f"GRID_{idx}"
                 name_val = str(row.get(name_col, '')).strip()
-                sangkat_val = str(row.get(sangkat_col, '')).strip() if sangkat_col else ""
+                
+                sangkat_raw = row.get(sangkat_col, '') if sangkat_col else ""
+                sangkat_val = "" if pd.isna(sangkat_raw) or str(sangkat_raw).lower() == 'nan' else str(sangkat_raw).strip()
                 
                 full_query = f"{name_val} {sangkat_val} Cambodia".strip()
+                full_query = re.sub(r'\s+', ' ', full_query)
+                
                 encoded_q = urllib.parse.quote(full_query)
                 google_url = f"https://www.google.com/maps/search/?api=1&query={encoded_q}"
                 
@@ -504,12 +508,10 @@ with tab2:
     st.markdown("## Step 2 · Add GRID to your Apify Export")
     st.caption("After running Apify, upload your export here. The tool matches each row via `inputStartUrl` and adds a `GRID` column.")
 
-    # Show green success notification if GRID session state exists
     if 'generated_urls_df' in st.session_state:
         num_grids = len(st.session_state['generated_urls_df'])
         st.success(f"✅ {num_grids} GRIDs ready from Step 1 above.")
 
-    # Collapsible expander for fallback CSV upload
     with st.expander("📂 Upload URL CSV (if you generated URLs in a previous session)", expanded=False):
         prev_url_file = st.file_uploader("Upload URL CSV file", type=["csv", "xlsx"], key="prev_urls")
         if prev_url_file:
@@ -588,8 +590,12 @@ with tab3:
 with tab4:
     st.markdown("""
     ### 📖 Cambodian Lead Classifier Guide
-    1. **Tab 2 (Step 1):** Upload Salesforce leads to generate search URLs for Apify.
-    2. **Apify Console:** Run Google Maps Scraper on generated URLs.
-    3. **Tab 2 (Step 2):** Upload the scraped Apify dataset to attach the `GRID` column.
-    4. **Tab 1:** Upload all 3 files (Leads, Apify Output, CRM) and click **Run Lead Classification**.
+    
+    #### Classification Definitions
+    - **P1 — New:** No CRM match, Apify-confirmed restaurant
+    - **P2 — Please Check:** No Apify result or no category found
+    - **P3 — Potential Match:** Name similarity 0.50–0.74 at same location
+    - **P4 — Duplicate:** Name similarity ≥ 0.75 at same location
+    - **Business Closed:** Google confirms permanently or temporarily closed
+    - **Wrong Target Group:** Google Maps category is not food-delivery eligible
     """)
