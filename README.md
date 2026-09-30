@@ -286,7 +286,7 @@ p3_threshold = st.sidebar.slider("P3 Potential Match starts at (%)", 40, 80, 50,
 p4_threshold = st.sidebar.slider("P4 Duplicate starts at (%)", 60, 95, 75, 5) / 100.0
 proximity_radius = st.sidebar.slider("GPS Proximity Radius (Meters)", 50, 1000, 200, 50)
 
-default_categories = ["restaurant", "cafe", "coffee", "bakery", "food", "noodle", "fast food", "bubble tea", "bistro", "pub"]
+default_categories = ["restaurant", "cafe", "coffee", "bakery", "food", "noodle", "fast food", "bubble tea", "bistro", "pub", "bar", "tea", "dessert", "drink", "beverage", "kitchen", "grill", "bbq", "eatery", "canteen", "catering", "steakhouse", "seafood", "sushi", "pizza", "burger", "ice cream"]
 fnb_categories_input = st.sidebar.text_area("Eligible F&B Categories", ", ".join(default_categories))
 valid_categories_list = [c.strip().lower() for c in fnb_categories_input.split(",") if c.strip()]
 
